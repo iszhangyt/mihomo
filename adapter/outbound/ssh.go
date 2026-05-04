@@ -35,6 +35,9 @@ type SshOption struct {
 	Port                 int      `proxy:"port"`
 	UserName             string   `proxy:"username"`
 	Password             string   `proxy:"password,omitempty"`
+	KeyboardInteractive  bool     `proxy:"keyboard-interactive,omitempty"`
+	KIResponses          map[string]string `proxy:"keyboard-interactive-responses,omitempty"`
+	KIDefaultResponse    string   `proxy:"keyboard-interactive-default-response,omitempty"`
 	PrivateKey           string   `proxy:"private-key,omitempty"`
 	PrivateKeyPassphrase string   `proxy:"private-key-passphrase,omitempty"`
 	HostKey              []string `proxy:"host-key,omitempty"`
@@ -151,6 +154,37 @@ func NewSsh(option SshOption) (*Ssh, error) {
 
 	if option.Password != "" {
 		config.Auth = append(config.Auth, ssh.Password(option.Password))
+	}
+
+	// Some SSH servers only offer "keyboard-interactive" (or prefer it even when a password exists).
+	// Since this is an outbound proxy, we cannot prompt interactively; instead we answer from config.
+	if option.KeyboardInteractive || option.Password != "" || len(option.KIResponses) != 0 || option.KIDefaultResponse != "" {
+		password := option.Password
+		defaultResp := option.KIDefaultResponse
+		respMap := option.KIResponses
+		config.Auth = append(config.Auth, ssh.KeyboardInteractive(
+			func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				answers := make([]string, len(questions))
+				for i, q := range questions {
+					if respMap != nil {
+						if v, ok := respMap[q]; ok {
+							answers[i] = v
+							continue
+						}
+					}
+					lq := strings.ToLower(q)
+					switch {
+					case password != "" && strings.Contains(lq, "password"):
+						answers[i] = password
+					case defaultResp != "":
+						answers[i] = defaultResp
+					default:
+						answers[i] = ""
+					}
+				}
+				return answers, nil
+			},
+		))
 	}
 
 	if len(option.HostKey) != 0 {
